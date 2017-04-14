@@ -42,10 +42,22 @@ getRegisterR = do
                 if filtering
                     then ", filtered"
                     else ""
-        maincontent =
-            registerReportHtml opts vd $
-            accountTransactionsReport (reportopts_ $ cliopts_ opts) j m $
-            fromMaybe Any $ inAccountQuery qopts
+        (chartQuery, depth) =
+            case (,) <$> inAccount qopts <*> inAccountQuery qopts of
+                Nothing -> (Any, 0)
+                Just ((an, _), aq) -> (aq, accountNameLevel an)
+        transRep =
+            accountTransactionsReport
+                (reportopts_ $ cliopts_ opts)
+                j
+                m
+                chartQuery
+        ballRep =
+            balanceReport
+                ((reportopts_ $ cliopts_ opts) {accountlistmode_=ALFlat})
+                (And [chartQuery, Depth $ depth + 1, m])
+                j
+        maincontent = registerReportHtml opts vd transRep ballRep
     hledgerLayout
         vd
         "register"
@@ -60,12 +72,16 @@ postRegisterR = postAddForm
 
 -- Generate html for an account register, including a balance chart and transaction list.
 registerReportHtml ::
-       WebOpts -> ViewData -> TransactionsReport -> HtmlUrl AppRoute
-registerReportHtml opts vd r =
+       WebOpts
+    -> ViewData
+    -> TransactionsReport
+    -> BalanceReport
+    -> HtmlUrl AppRoute
+registerReportHtml opts vd r br =
     [hamlet|
  <div .hidden-xs>
   ^{registerChartHtml $ transactionsReportByCommodity r}
-  ^{registerPieChartHtml}
+  ^{registerPieChartHtml br}
  ^{registerItemsHtml opts vd r}
 |]
 
@@ -216,8 +232,8 @@ registerChartHtml percommoditytxnreports
             then " "
             else c
 
-registerPieChartHtml :: HtmlUrl AppRoute
-registerPieChartHtml =
+registerPieChartHtml :: BalanceReport -> HtmlUrl AppRoute
+registerPieChartHtml (bris, _) = do
     [hamlet|
 <label #register-pie-chart-label style=""><br>
 <div #register-pie-chart style="height:150px; margin-bottom:1em; display:block;">
@@ -228,16 +244,23 @@ registerPieChartHtml =
           \$('#register-pie-chart-label').text('#{charttitle}');
           var data =
                 [
-                    { label: "Food", data: 5 },
-                    { label: "Rent", data: 10 },
-                    { label: "Internet", data: 85 }
+                    $forall (label, dat) <- labelDataTups
+                        { label: "#{label}", data: #{dat} },
                 ];
+
+          function legendFormatter(label, series) {
+              return Math.round(series.percent).toFixed(2) + '% ' + label;
+          };
           var options = {
                 series: {
                     pie: {
-                        show: true
+                        show: true,
                     }
-                 }
+                },
+                legend: {
+                    show: true,
+                    labelFormatter: legendFormatter
+                }
               };
           \$.plot($chartdiv, data, options);
         }
@@ -245,3 +268,8 @@ registerPieChartHtml =
 |]
   where
     charttitle = "Pie Chart" :: String
+    labelDataTups =
+        reverse $
+        sortOn snd $
+        flip concatMap bris $ \(accname, _, _, Mixed amounts) ->
+            flip map amounts $ \amount -> (accname, aquantity amount)
